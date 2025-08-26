@@ -1,7 +1,12 @@
 import "./App.css";
+import Popup from "./popup/Popup";
 
 const App = () => {
-    return <></>;
+    return (
+        <>
+            <Popup />
+        </>
+    );
 };
 
 export default App;

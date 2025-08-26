@@ -1,45 +1,92 @@
 let activeTabId: number | null = null;
-let lastActiveTime: number = Date.now();
+let activeTabStart: number | null = null;
 
-// Called when the user switches tabs
+// Helper function to get the current active tab's URL
+async function getActiveTabUrl(): Promise<string | null> {
+    if (activeTabId === null) return null;
+    try {
+        const tab = await chrome.tabs.get(activeTabId);
+        return tab?.url ?? null;
+    } catch {
+        // Tab no longer exists, handle the error gracefully
+        return null;
+    }
+}
+
+// Finalize and save time for the previous tab
+async function finalizeAndSaveTime() {
+    if (activeTabId === null || activeTabStart === null) return;
+
+    const now = Date.now();
+    const duration = now - activeTabStart;
+    const url = await getActiveTabUrl();
+
+    if (url) {
+        const result = await chrome.storage.local.get([url]);
+        const prevTime = result[url] || 0;
+        await chrome.storage.local.set({ [url]: prevTime + duration });
+    }
+}
+
+// Initialize the extension
+async function initialize() {
+    const [tab] = await chrome.tabs.query({
+        active: true,
+        lastFocusedWindow: true,
+    });
+    if (tab?.id) {
+        activeTabId = tab.id;
+        activeTabStart = Date.now();
+    }
+}
+initialize();
+
+// Event listener for tab changes
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-    await recordTime(); // Record time for the previous tab
+    await finalizeAndSaveTime();
     activeTabId = tabId;
-    lastActiveTime = Date.now();
+    activeTabStart = Date.now();
 });
 
-// Called when the user switches windows
+// Event listener for window focus changes
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
+    await finalizeAndSaveTime();
     if (windowId === chrome.windows.WINDOW_ID_NONE) {
-        // No window is focused
-        await recordTime();
         activeTabId = null;
+        activeTabStart = null;
     } else {
-        lastActiveTime = Date.now();
+        const [tab] = await chrome.tabs.query({
+            active: true,
+            windowId: windowId,
+        });
+        if (tab?.id) {
+            activeTabId = tab.id;
+            activeTabStart = Date.now();
+        }
     }
 });
 
-/**
- * Records the time spent on the current tab. This function is called whenever
- * the user switches tabs or windows.
- *
- * @returns {Promise<void>}
- */
-async function recordTime() {
-    if (activeTabId === null) return;
+// Event listener for tab removal
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+    if (tabId === activeTabId) {
+        await finalizeAndSaveTime();
+        activeTabId = null;
+        activeTabStart = null;
+    }
+});
+
+// A periodic timer to continuously update the time for the active tab
+setInterval(async () => {
+    if (activeTabId === null || activeTabStart === null) return;
 
     const now = Date.now();
-    const duration = now - lastActiveTime;
+    const duration = now - activeTabStart;
+    activeTabStart = now; // Reset the start time for the next interval
 
-    chrome.tabs.get(activeTabId, (tab) => {
-        if (!tab || !tab.url) return;
-
-        const key = tab.url;
-        chrome.storage.local.get([key], (result) => {
-            const prevTime = result[key] || 0;
-            const newTime = prevTime + duration;
-
-            chrome.storage.local.set({ [key]: newTime });
-        });
-    });
-}
+    const url = await getActiveTabUrl();
+    if (url) {
+        const result = await chrome.storage.local.get([url]);
+        const prevTime = result[url] || 0;
+        await chrome.storage.local.set({ [url]: prevTime + duration });
+    }
+}, 5000); // Updates every 5 seconds
